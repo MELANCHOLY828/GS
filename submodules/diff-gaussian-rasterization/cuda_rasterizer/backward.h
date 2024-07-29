@@ -17,6 +17,7 @@
 #include "device_launch_parameters.h"
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
+#include <glm/gtx/pca.hpp>
 
 namespace BACKWARD
 {
@@ -30,16 +31,27 @@ namespace BACKWARD
 		const float4* conic_opacity,
 		const float* colors,
 		const float* depths,
-		const float* accum_alphas,
+		const float2* depths_plane,
+		const float* alphas,
+		const float3* normals,
+		const float* wd_map,
+		const float* wd2_map,
 		const uint32_t* n_contrib,
 		const float* dL_dpixels,
 		const float* dL_dpixel_depths,
-		const float* dL_dpixel_alphas,
+		const float* dL_dpixel_middepths,
+		const float* dL_dalphas,
+		const float* dL_dpixel_normals,
+		const float* dL_ddistortions,
+		const float focal_x, 
+		const float focal_y,
 		float3* dL_dmean2D,
 		float4* dL_dconic2D,
 		float* dL_dopacity,
 		float* dL_dcolors,
-		float* dL_ddepths);
+		float* dL_ddepths,
+		float2* dL_ddepths_plane,
+		float3* dL_dnormals);
 
 	void preprocess(
 		int P, int D, int M,
@@ -60,11 +72,16 @@ namespace BACKWARD
 		const float* dL_dconics,
 		glm::vec3* dL_dmeans,
 		float* dL_dcolor,
-		float* dL_ddepth,
+		const float* dL_ddepth,
+		const float2* dL_ddepth_plane,
+		const float3* dL_dnormals,
 		float* dL_dcov3D,
 		float* dL_dsh,
 		glm::vec3* dL_dscale,
-		glm::vec4* dL_drot);
+		glm::vec4* dL_drot,
+		const float4* conic_opacity,
+		float* dL_dopacity,
+		float* depth);
 }
 
 #endif

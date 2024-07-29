@@ -22,7 +22,6 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
-
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -32,6 +31,12 @@ class CameraInfo(NamedTuple):
     image: np.array
     image_path: str
     image_name: str
+    mask: np.array
+    mask_path: str
+    mask_name: str
+    depth: np.array
+    depth_path: str
+    depth_name: str 
     width: int
     height: int
 
@@ -65,7 +70,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mask_folder, depth_folder):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -97,9 +102,30 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
-
+        if mask_folder:
+            name_without_ext = os.path.splitext(os.path.basename(extr.name))[0]
+            prefix = name_without_ext[-3:]
+            number = name_without_ext.lstrip('0')
+            new_name = f'mask_{prefix}.png'
+            mask_path = os.path.join(mask_folder, new_name)
+            mask_name = image_name
+            mask = Image.open(mask_path)
+        else:
+            mask = None
+            mask_name = None
+            mask_path = None
+        if depth_folder:
+            depth_name = image_name+'.png'
+            depth_path = os.path.join(os.path.dirname(images_folder), 'depth',depth_name)
+            depth = Image.open(depth_path)
+        else:
+            depth = None
+            depth_name = None
+            depth_path = None
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+                              image_path=image_path, image_name=image_name,mask=mask,
+                              mask_path=mask_path, mask_name=mask_name, depth=depth, depth_name=depth_name,  depth_path=depth_path,
+                              width=width, height=height)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -142,7 +168,15 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    if os.path.exists(os.path.join(path, "outputs/mask")):
+        mask_dir = os.path.join(path, "outputs/mask")
+    else :
+        mask_dir = None
+    if os.path.exists(os.path.join(path, "depth")):
+        depth_dir = os.path.join(path, "depth")
+    else:
+        depth_dir = None
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), mask_folder=mask_dir, depth_folder=depth_dir)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:

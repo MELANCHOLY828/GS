@@ -12,25 +12,63 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, edge_aware_normal_loss, ms_ssim
+from utils.loss_utils import l1_loss, edge_aware_normal_loss, ms_ssim, ssim
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from tqdm import tqdm
-from utils.image_utils import psnr, render_net_image, depth_to_normal
+# from utils.image_utils import psnr, render_net_image, depth_to_normal
+from utils.image_utils import psnr, render_net_image
+
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import random
+import math
+from utils.vis_utils import apply_depth_colormap, save_points, colormap
+from utils.depth_utils import depths_to_points, depth_to_normal
+import torchvision
+import numpy as np
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+def depths_double_to_points(view, depthmap1, depthmap2):
+    W, H = view.image_width, view.image_height
+    fx = W / (2 * math.tan(view.FoVx / 2.))
+    fy = H / (2 * math.tan(view.FoVy / 2.))
+    intrins = torch.tensor(
+        [[fx, 0., W/2.],
+        [0., fy, H/2.],
+        [0., 0., 1.0]]
+    ).float().cuda()
+    grid_x, grid_y = torch.meshgrid(torch.arange(W)+0.5, torch.arange(H)+0.5, indexing='xy')
+    points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3).float().cuda()
+    rays_d = points @ intrins.inverse().T
+    # rays_o = torch.zeros(3,dtype=torch.float32,device="cuda")
+    # rays_o = c2w[:3,3]
+    points1 = depthmap1.reshape(-1, 1) * rays_d
+    points2 = depthmap2.reshape(-1, 1) * rays_d
+    return points1, points2
+
+def depth_double_to_normal(view, depth1, depth2):
+    points1, points2 = depths_double_to_points(view, depth1, depth2)
+    points = torch.stack([points1, points2],dim=0).reshape(2, *depth1.shape[1:], 3)
+    output = torch.zeros_like(points)
+    dx = points[:,2:, 1:-1] - points[:,:-2, 1:-1]
+    dy = points[:,1:-1, 2:] - points[:,1:-1, :-2]
+    normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
+    output[:,1:-1, 1:-1, :] = normal_map
+    return output, points
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+    # import pdb
+    # pdb.set_trace() 
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
@@ -43,15 +81,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
-
+    trainCameras = scene.getTrainCameras().copy()
+    testCameras = scene.getTestCameras().copy()
+    allCameras = trainCameras + testCameras
+    
     viewpoint_stack = None
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    img_num = -1
+    img_num_modifier = 1
     for iteration in range(first_iter, opt.iterations + 1):
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
+            if img_num == -1:
+                img_num = len(viewpoint_stack)
+
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1)) 
 
         iter_start.record()
@@ -67,24 +113,131 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
-        image, viewspace_point_tensor, visibility_filter = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"]
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg,depth_threshold = opt.depth_threshold * scene.cameras_extent)
+        # render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
 
+        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        gs_w = render_pkg["gs_w"]
+        rendered_mask: torch.Tensor = render_pkg["mask"]
+        rendered_depth: torch.Tensor = render_pkg["depth"]
+        rendered_middepth: torch.Tensor = render_pkg["middepth"]
+        rendered_normal: torch.Tensor = render_pkg["normal"]
+        depth_distortion: torch.Tensor = render_pkg["depth_distortion"]
+        gt_image = viewpoint_cam.original_image.cuda()
+        depth = (rendered_depth - rendered_depth.min()) / (rendered_depth.max() - rendered_depth.min())
+        if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
+            depth_mask = (viewpoint_cam.original_depth>0) # render_pkg["acc"][0]
+            gt_maskeddepth = (viewpoint_cam.original_depth * depth_mask).cuda()
+
+        if opt.sky:
+            mask = viewpoint_cam.mask.cuda().squeeze()
+            # gt_image[:,~mask] =0 
+            # image[:,~mask] = 0
+            gt_image[:,mask] = 0 
+            # image[:,mask] = 0
+            if opt.use_depth and viewpoint_cam.original_depth is not None:
+                gt_maskeddepth[:,mask] = 0
+        # # 转换Tensor为numpy数组，并将其值从[0,1]范围缩放到[0,255]范围
+        # rgb_array = (gt_image * 255).byte().cpu().numpy()
+
+        # # 变换数组的形状从 [3, 545, 980] 到 [545, 980, 3]
+        # rgb_array = np.transpose(rgb_array, (1, 2, 0))
+
+        # # 将numpy数组转换为PIL图片
+        # image = Image.fromarray(rgb_array)
+
+        # # 保存图片
+        # image.save('output_image_pil.png')
+        if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
+            deploss = l1_loss(gt_maskeddepth, depth*depth_mask) * 0.1
+        else:
+            deploss = torch.tensor([0],dtype=torch.float32,device="cuda")
+
+        edge = viewpoint_cam.edge
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         L_ms_ssim = (1.0 - ms_ssim(image, gt_image))
+        Lrgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        # Lrgb =  (1.0 - opt.lambda_ms_ssim) * Ll1 + opt.lambda_ms_ssim * L_ms_ssim 
+        # loss = Lrgb
         
-        Lrgb =  (1.0 - opt.lambda_ms_ssim) * Ll1 + opt.lambda_ms_ssim * L_ms_ssim 
-        loss = Lrgb
+        # if iteration < opt.atom_proliferation_until:
+        #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(render_pkg["mean_depth"], viewpoint_cam).permute(2,0,1))
+        #     loss += opt.lambda_normal*Lnormal
+
+        if iteration >= opt.regularization_from_iter:
+            # depth distortion loss
+            lambda_distortion = opt.lambda_distortion
+            depth_distortion = torch.where(rendered_mask>0,depth_distortion/(rendered_mask * rendered_mask).detach(),0)
+            distortion_map = depth_distortion[0] * edge
+            distortion_loss = distortion_map.mean()
+
+            # normal consistency loss
+            rendered_depth = rendered_depth / rendered_mask
+            rendered_depth = torch.nan_to_num(rendered_depth, 0, 0)
+            depth_middepth_normal, _ = depth_double_to_normal(viewpoint_cam, rendered_depth, rendered_middepth)
+            depth_ratio = 0.6
+            rendered_normal = torch.nn.functional.normalize(rendered_normal, p=2, dim=0)
+            rendered_normal = rendered_normal.permute(1,2,0)
+            normal_error_map = (1 - (rendered_normal.unsqueeze(0) * depth_middepth_normal).sum(dim=-1))
+            depth_normal_loss = (1-depth_ratio) * normal_error_map[0].mean() + depth_ratio * normal_error_map[1].mean()
+            lambda_depth_normal = opt.lambda_depth_normal
+        else:
+            lambda_distortion = 0
+            lambda_depth_normal = 0
+            distortion_loss = torch.tensor([0],dtype=torch.float32,device="cuda")
+            depth_normal_loss = torch.tensor([0],dtype=torch.float32,device="cuda")
+            
         
-        if iteration < opt.atom_proliferation_until:
-            Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(render_pkg["mean_depth"], viewpoint_cam).permute(2,0,1))
-            loss += opt.lambda_normal*Lnormal
+        loss = Lrgb + depth_normal_loss * lambda_depth_normal + distortion_loss * lambda_distortion + deploss
+        
+        # scale_loss = True
+        # lambda_ = 1e-5
+        
+        if opt.scale_loss and iteration>=7000:
+            scales = gaussians.get_scaling   
+            s1, s2, s3 = scales[:, 0], scales[:, 1], scales[:, 2]
+            sum_of_squares = s1**2 + s2**2 + s3**2
+            s1_normalized = (s1**2) / (sum_of_squares)
+            s2_normalized = (s2**2) / (sum_of_squares)
+            s3_normalized = (s3**2) / (sum_of_squares)
+            # 计算 h = -累加和(si_normalized * log(si_normalized))，并分别计算三个维度
+            h1 = (s1_normalized * torch.log(s1_normalized))
+            h2 = (s2_normalized * torch.log(s2_normalized))
+            h3 = (s3_normalized * torch.log(s3_normalized))
+
+            # 将三个维度的 h 相加
+            h = -(h1 + h2 + h3)
+            erank = torch.exp(h)
+            log_h = -torch.log(erank-1+opt.lambda_rank)
+            loss_rank = opt.lambda_erank * torch.max(log_h, torch.tensor(0.0))
+            loss_rank = loss_rank.mean()
+            # loss_rank = torch.sum(loss_rank)
+            min_scale, _ = torch.min(scales, dim=1)
+            min_scale = torch.clamp(min_scale, 0, 30)
+            scale_loss = torch.abs(min_scale).mean() + loss_rank
+            # scale_loss = torch.sum(torch.abs(min_scale)) + loss_rank
+            loss += scale_loss
+
 
         loss.backward()
 
         iter_end.record()
+        is_save_images = True
+        if is_save_images and (iteration % opt.densification_interval == 0):
+            if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
+
+                log_depth = depth.expand(3, depth.shape[1], depth.shape[2])
+                row0 = torch.cat([gt_image, image, viewpoint_cam.original_depth, log_depth], dim=2)      
+            else:
+                row0 = torch.cat([gt_image, image], dim=2)      
+            image_to_show = torch.clamp(row0, 0, 1)
+            
+            os.makedirs(f"{dataset.model_path}/log_images", exist_ok = True)
+            torchvision.utils.save_image(image_to_show, f"{dataset.model_path}/log_images/{iteration}.jpg")
+        
 
         with torch.no_grad():
             # Progress bar
@@ -101,19 +254,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
+            gaussians.max_weight[visibility_filter] = torch.max(gaussians.max_weight[visibility_filter],
+                                                                gs_w[visibility_filter])
             # Densification
             if iteration < opt.densify_until_iter:
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                        gaussians.densify_and_prune(opt.clone_threshold, min(opt.split_threshold*iteration/opt.warm_up_until, opt.split_threshold), opt.prune_threshold)
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None   #改成3000了
+                    # gaussians.densify_and_prune(opt.densify_grad_threshold, 0.05, scene.cameras_extent, size_threshold)
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, opt.densify_grad_abs_threshold, 0.005, scene.cameras_extent, size_threshold)
+
+                    # gaussians.densify_and_prune(opt.clone_threshold, min(opt.split_threshold*iteration/opt.warm_up_until, opt.split_threshold), opt.prune_threshold)
 
                 if  iteration % opt.densification_interval == 0 and iteration < opt.atom_proliferation_until:
                     gaussians.atomize()
-                
+
+                if iteration % opt.opacity_reduce_interval == 0 and opt.use_reduce:
+                    gaussians.reduce_opacity()
+
                 if (iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter)):
                     gaussians.reset_opacity()
-            
+            if iteration > opt.densify_from_iter and iteration < opt.prune_until_iter and opt.use_prune_weight:
+                if iteration % img_num / img_num_modifier == 0 and iteration % opt.opacity_reset_interval > img_num / img_num_modifier:
+                    prune_mask = (gaussians.max_weight < opt.min_weight).squeeze()
+                    gaussians.prune_points(prune_mask)
+                    gaussians.max_weight *= 0
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
@@ -122,6 +290,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                
         with torch.no_grad():        
             if network_gui.conn == None:
                 network_gui.try_connect(dataset.render_items)
@@ -212,6 +381,8 @@ if __name__ == "__main__":
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    # parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    # parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000,2_000,3_000,4_000,5_000,6_000,7_000, 8_000,9_000,10_000,30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)

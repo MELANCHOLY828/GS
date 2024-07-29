@@ -55,6 +55,7 @@ def export(dataset, pipe, iteration, downsample, depth_threshold, poisson_depth)
 
     print("\nSaving Poisson Mesh")
     o3d.io.write_triangle_mesh(os.path.join(args.model_path, "point_cloud", "iteration_" + str(iteration),'mesh.ply'), mesh)
+    print(os.path.join(args.model_path, "point_cloud", "iteration_" + str(iteration),'mesh.ply'))
     
     
 if __name__ == "__main__":

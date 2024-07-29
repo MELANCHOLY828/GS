@@ -76,7 +76,7 @@ class OptimizationParams(ParamGroup):
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
-        self.position_lr_max_steps = 7000
+        self.position_lr_max_steps = 30000   # 7000
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
@@ -86,16 +86,37 @@ class OptimizationParams(ParamGroup):
 
         self.densification_interval = 100
         self.densify_from_iter = 100
-        self.opacity_reset_interval = 300
+        # self.opacity_reset_interval = 300
+        self.opacity_reset_interval = 3000
+
+        self.percent_dense = 0.001  # 0.01
 
         self.atom_proliferation_until = 7000
         self.warm_up_until = 7000
         self.densify_until_iter = 15_000
+        self.lambda_dssim = 0.2
 
         self.prune_threshold = 0.005
         self.clone_threshold = 0.0002
         self.split_threshold = 0.0002
         self.random_background = False
+        self.regularization_from_iter = 15_0000
+        self.lambda_distortion = 100
+        self.lambda_depth_normal = 0.05
+        self.densify_grad_threshold = 0.0002
+        self.densify_grad_abs_threshold = 0.0004
+        self.lambda_erank = 0.01
+        self.min_weight = 0.7
+        self.prune_until_iter = 25000
+        self.use_prune_weight = False
+        self.use_reduce = True
+        self.opacity_reduce_interval = 500  # remove floater
+        self.depth_threshold = 0.37
+        self.sky = False
+        self.use_depth = True
+        self.lambda_rank = 1e-5
+        self.scale_loss = True
+        self.use_depth_iter = 7000
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

@@ -17,6 +17,17 @@
 
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE/32)
+#define NEAR_PLANE 0.2
+#define FAR_PLANE 100.0
+
+#define DEPTH_OFFSET 6
+#define ALPHA_OFFSET 7
+#define DISTORTION_OFFSET 8
+#define OUTPUT_CHANNELS 9
+
+// #define MAX_NUM_CONTRIBUTORS 256
+#define MAX_NUM_CONTRIBUTORS 512
+#define MAX_NUM_PROJECTED 256
 
 // Spherical harmonics coefficients
 __device__ const float SH_C0 = 0.28209479177387814f;
@@ -37,6 +48,9 @@ __device__ const float SH_C3[] = {
 	1.445305721320277f,
 	-0.5900435899266435f
 };
+
+// __device__ const float kernel_size = 0.1;
+__device__ const float kernel_size = 0.0;
 
 __forceinline__ __device__ float ndc2Pix(float v, int S)
 {
