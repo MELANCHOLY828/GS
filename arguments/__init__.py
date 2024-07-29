@@ -116,7 +116,7 @@ class OptimizationParams(ParamGroup):
         self.use_depth = True
         self.lambda_rank = 1e-5
         self.scale_loss = True
-        self.use_depth_iter = 7000
+        self.use_depth_iter = 700
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

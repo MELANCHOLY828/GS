@@ -228,7 +228,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         is_save_images = True
         if is_save_images and (iteration % opt.densification_interval == 0):
             if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
-
+                # import pdb
+                # pdb.set_trace() 
                 log_depth = depth.expand(3, depth.shape[1], depth.shape[2])
                 row0 = torch.cat([gt_image, image, viewpoint_cam.original_depth, log_depth], dim=2)      
             else:
