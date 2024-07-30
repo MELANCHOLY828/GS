@@ -103,12 +103,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mask_folder
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
         if mask_folder:
-            name_without_ext = os.path.splitext(os.path.basename(extr.name))[0]
-            prefix = name_without_ext[-3:]
-            number = name_without_ext.lstrip('0')
-            new_name = f'mask_{prefix}.png'
-            mask_path = os.path.join(mask_folder, new_name)
-            mask_name = image_name
+            # name_without_ext = os.path.splitext(os.path.basename(extr.name))[0]
+            # prefix = name_without_ext[-3:]
+            # number = name_without_ext.lstrip('0')
+            # new_name = f'mask_{prefix}.png'
+            mask_path = os.path.join(mask_folder, os.path.basename(extr.name))
+            mask_name = os.path.basename(image_path).split(".")[0]
             mask = Image.open(mask_path)
         else:
             mask = None

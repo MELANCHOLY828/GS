@@ -124,19 +124,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         rendered_normal: torch.Tensor = render_pkg["normal"]
         depth_distortion: torch.Tensor = render_pkg["depth_distortion"]
         gt_image = viewpoint_cam.original_image.cuda()
-        depth = (rendered_depth - rendered_depth.min()) / (rendered_depth.max() - rendered_depth.min())
-        if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
-            depth_mask = (viewpoint_cam.original_depth>0) # render_pkg["acc"][0]
-            gt_maskeddepth = (viewpoint_cam.original_depth * depth_mask).cuda()
+        # rendered_depth = rendered_depth / rendered_mask
+        # rendered_depth = torch.nan_to_num(rendered_depth, 0, 0)
+        # depth = (rendered_depth - rendered_depth.min()) / (rendered_depth.max() - rendered_depth.min())
+        depth = rendered_depth/rendered_mask
 
-        if opt.sky:
+        if opt.sky or opt.mask_depth:
             mask = viewpoint_cam.mask.cuda().squeeze()
             # gt_image[:,~mask] =0 
             # image[:,~mask] = 0
-            gt_image[:,mask] = 0 
+            if opt.sky:
+                gt_image[:,mask] = 0 
             # image[:,mask] = 0
-            if opt.use_depth and viewpoint_cam.original_depth is not None:
+        if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
+            depth_mask = (viewpoint_cam.original_depth>0) # render_pkg["acc"][0]
+            gt_maskeddepth = (viewpoint_cam.original_depth * depth_mask).cuda()
+            if opt.mask_depth:
+                # import pdb
+                # pdb.set_trace() 
                 gt_maskeddepth[:,mask] = 0
+                depth[:,mask] = 0
+                gt_maskeddepth[:,~mask] = (gt_maskeddepth[:,~mask] - gt_maskeddepth[:,~mask].min()) / (gt_maskeddepth[:,~mask].max() - gt_maskeddepth[:,~mask].min())
+                depth[:,~mask] = (depth[:,~mask] - depth[:,~mask].min()) / (depth[:,~mask].max() - depth[:,~mask].min())
+
         # # 转换Tensor为numpy数组，并将其值从[0,1]范围缩放到[0,255]范围
         # rgb_array = (gt_image * 255).byte().cpu().numpy()
 
@@ -227,13 +237,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_end.record()
         is_save_images = True
         if is_save_images and (iteration % opt.densification_interval == 0):
+            log_depth = depth.expand(3, depth.shape[1], depth.shape[2])
             if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
-                # import pdb
-                # pdb.set_trace() 
-                log_depth = depth.expand(3, depth.shape[1], depth.shape[2])
-                row0 = torch.cat([gt_image, image, viewpoint_cam.original_depth, log_depth], dim=2)      
+                row0 = torch.cat([gt_image, image, gt_maskeddepth, log_depth], dim=2)       
             else:
-                row0 = torch.cat([gt_image, image], dim=2)      
+                row0 = torch.cat([gt_image, image, viewpoint_cam.original_depth, log_depth], dim=2)       
             image_to_show = torch.clamp(row0, 0, 1)
             
             os.makedirs(f"{dataset.model_path}/log_images", exist_ok = True)

@@ -61,7 +61,7 @@ def dispatch_jobs(jobs, executor):
         # Get the list of available GPUs, not including those that are reserved.
         all_available_gpus = set(range(torch.cuda.device_count()))
         available_gpus = list(all_available_gpus - reserved_gpus - excluded_gpus)
-        available_gpus = [1]
+        available_gpus = [0]
         # Launch new jobs on available GPUs
         while available_gpus and jobs:
             gpu = available_gpus.pop(0)
