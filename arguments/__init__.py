@@ -51,6 +51,8 @@ class ModelParams(ParamGroup):
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
+        self._depths = "depth"
+        self._getmasks = "outputs/mask"
         self._resolution = -1
         self._white_background = False
         self.data_device = "cuda"
@@ -117,7 +119,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_rank = 1e-5
         self.scale_loss = True
         self.use_depth_iter = 7000
-        self.mask_depth = True
+        self.mask_depth = False
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

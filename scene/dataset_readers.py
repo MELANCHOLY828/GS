@@ -39,7 +39,7 @@ class CameraInfo(NamedTuple):
     depth_name: str 
     width: int
     height: int
-
+    depth_params: dict
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
@@ -70,7 +70,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mask_folder, depth_folder):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mask_folder, depth_folder, depths_params):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -98,6 +98,15 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mask_folder
             FovX = focal2fov(focal_length_x, width)
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+        
+        n_remove = len(extr.name.split('.')[-1]) + 1
+        depth_params = None
+        if depths_params is not None:
+            try:
+                depth_params = depths_params[extr.name[:-n_remove]]
+            except:
+                print("\n", key, "not found in depths_params")
+
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
@@ -124,7 +133,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mask_folder
             depth_path = None
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                               image_path=image_path, image_name=image_name,mask=mask,
-                              mask_path=mask_path, mask_name=mask_name, depth=depth, depth_name=depth_name,  depth_path=depth_path,
+                              mask_path=mask_path, mask_name=mask_name, depth=depth, depth_name=depth_name,  depth_path=depth_path, depth_params=depth_params,
                               width=width, height=height)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
@@ -155,7 +164,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8):
+def readColmapSceneInfo(path, images, masks, depths, eval, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -167,16 +176,35 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
+    depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
+    depths_params = None
     reading_dir = "images" if images == None else images
-    if os.path.exists(os.path.join(path, "outputs/mask")):
-        mask_dir = os.path.join(path, "outputs/mask")
+    if masks != "":
+        mask_dir = os.path.join(path, masks)
     else :
         mask_dir = None
-    if os.path.exists(os.path.join(path, "depth")):
-        depth_dir = os.path.join(path, "depth")
+    if depths != "":
+        depth_dir = os.path.join(path, depths)
+        try:
+            with open(depth_params_file, "r") as f:
+                depths_params = json.load(f)
+            all_scales = np.array([depths_params[key]["scale"] for key in depths_params])
+            if (all_scales > 0).sum():
+                med_scale = np.median(all_scales[all_scales > 0])
+            else:
+                med_scale = 0
+            for key in depths_params:
+                depths_params[key]["med_scale"] = med_scale
+
+        except FileNotFoundError:
+            print(f"Error: depth_params.json file not found at path '{depth_params_file}'.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
+            sys.exit(1)
     else:
         depth_dir = None
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), mask_folder=mask_dir, depth_folder=depth_dir)
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), mask_folder=mask_dir, depth_folder=depth_dir, depths_params=depths_params)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
