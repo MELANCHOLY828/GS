@@ -76,29 +76,30 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.sh_degree,
             raster_settings.campos,
             raster_settings.prefiltered,
-            raster_settings.debug
+            raster_settings.debug,
+            raster_settings.do_invdepth,
         )
 
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                num_rendered, color, depth, alpha, normal, radii, geomBuffer, binningBuffer, imgBuffer, gs_w = _C.rasterize_gaussians(*args)
+                num_rendered, color, depth, inverse_depth, alpha, normal, radii, geomBuffer, binningBuffer, imgBuffer, gs_w = _C.rasterize_gaussians(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw.dump")
                 print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
                 raise ex
         else:
-            num_rendered, color, depth, middepth, alpha, normal, distortion, radii, geomBuffer, binningBuffer, imgBuffer, gs_w = _C.rasterize_gaussians(*args)
+            num_rendered, color, depth, inverse_depth, middepth, alpha, normal, distortion, radii, geomBuffer, binningBuffer, imgBuffer, gs_w = _C.rasterize_gaussians(*args)
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer, alpha)
-        return color, radii, depth, middepth, alpha, normal, distortion, gs_w
+        return color, radii, depth, inverse_depth, middepth, alpha, normal, distortion, gs_w
 
     @staticmethod
-    def backward(ctx, grad_color, grad_radii, grad_depth, grad_middepth, grad_alpha,grad_normal, grad_distortion, grad_gs_w):
+    def backward(ctx, grad_color, grad_radii, grad_depth, grad_invdepth, grad_middepth, grad_alpha,grad_normal, grad_distortion, grad_gs_w):
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
@@ -120,6 +121,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 raster_settings.tanfovy, 
                 grad_color,
                 grad_depth,
+                grad_invdepth,
                 grad_middepth,
                 grad_alpha,
                 grad_normal,
@@ -193,7 +195,7 @@ class GaussianRasterizationSettings(NamedTuple):
     campos : torch.Tensor
     prefiltered : bool
     debug : bool
-
+    do_invdepth : bool
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):
         super().__init__()

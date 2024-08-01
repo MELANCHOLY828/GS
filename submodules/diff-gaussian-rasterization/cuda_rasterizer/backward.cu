@@ -614,6 +614,7 @@ renderCUDA(
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
 	const float* __restrict__ dL_dpixel_depths,
+	const float* __restrict__ dL_dpixel_invdepths,
 	const float* __restrict__ dL_dpixel_middepths,
 	const float* __restrict__ dL_dalphas,
 	const float* __restrict__ dL_dpixel_normals,
@@ -626,6 +627,7 @@ renderCUDA(
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_ddepths,
 	float2* __restrict__ dL_ddepths_plane,
+	// float* __restrict__ dL_dinvdepths,
 	float3* __restrict__ dL_dnormals
 )
 {
@@ -687,7 +689,7 @@ renderCUDA(
 	float accum_w = 0;
 	float accum_wd = 0;
 	float accum_wd2 = 0;
-	
+	float dL_dpixel_invdepth;
 	if (inside) {
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
@@ -697,6 +699,8 @@ renderCUDA(
 		dL_ddistortion = dL_ddistortions[pix_id];
 		for (int i = 0; i < 3; i++)
 			dL_dpixel_normal[i] = dL_dpixel_normals[i * H * W + pix_id];
+		if(dL_dpixel_invdepths)
+		dL_dpixel_invdepth = dL_dpixel_invdepths[pix_id];
 	}
 
 	float last_alpha = 0;
@@ -704,7 +708,8 @@ renderCUDA(
 	float last_depth = 0;
 	float last_dL_dw = 0;
 	float last_normal[3] = {0};
-
+	float last_invdepth = 0;
+	float accum_invdepth_rec = 0;
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
 	const float ddelx_dx = 0.5 * W;
@@ -823,14 +828,22 @@ renderCUDA(
 					break;
 				}
 			}
-			
+			if (dL_dpixel_invdepths) //
+			{
+			const float invd = 1.f / depth;
+			accum_invdepth_rec = last_alpha * last_invdepth + (1.f - last_alpha) * accum_invdepth_rec;
+			last_invdepth = invd;
+			dL_dopa += (invd - accum_invdepth_rec) * dL_dpixel_invdepth;
+			// atomicAdd(&(dL_dinvdepths[global_id]), weight * dL_dpixel_invdepth);
+			}
 			// Propagate gradients from pixel depth to opacity
 
 			accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
 			last_depth = depth;
 			dL_dopa += (depth - accum_depth_rec) * dL_dpixel_depth;
 			float dL_ddepth = dpixel_depth_ddepth * dL_dpixel_depth
-								+ 2 * dchannel_dcolor * (w_final * mapped_max_t - wd_final) * dL_ddistortion * dmax_t_dd;
+								+ 2 * dchannel_dcolor * (w_final * mapped_max_t - wd_final) * dL_ddistortion * dmax_t_dd
+								- dpixel_depth_ddepth * dL_dpixel_invdepth  / (depth * depth);
 			if (contributor == max_contributor-1) {
 				dL_ddepth += dL_dpixel_middepth;
 			}
@@ -998,6 +1011,7 @@ void BACKWARD::render(
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
 	const float* dL_dpixel_depths,
+	const float* dL_dpixel_invdepths,
 	const float* dL_dpixel_middepths,
 	const float* dL_dalphas,
 	const float* dL_dpixel_normals,
@@ -1010,6 +1024,7 @@ void BACKWARD::render(
 	float* dL_dcolors,
 	float* dL_ddepths,
 	float2* dL_ddepths_plane,
+	// float* dL_dinvdepths,
 	float3* dL_dnormals)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
@@ -1029,6 +1044,7 @@ void BACKWARD::render(
 		n_contrib,
 		dL_dpixels,
 		dL_dpixel_depths,
+		dL_dpixel_invdepths,
 		dL_dpixel_middepths,
 		dL_dalphas,
 		dL_dpixel_normals,
@@ -1041,6 +1057,7 @@ void BACKWARD::render(
 		dL_dcolors,
 		dL_ddepths,
 		dL_ddepths_plane,
+		// dL_dinvdepths,
 		dL_dnormals
 		);
 }

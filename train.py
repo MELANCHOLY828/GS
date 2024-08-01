@@ -27,6 +27,7 @@ import random
 import math
 from utils.vis_utils import apply_depth_colormap, save_points, colormap
 from utils.depth_utils import depths_to_points, depth_to_normal
+from utils.general_utils import get_expon_lr_func
 import torchvision
 import numpy as np
 
@@ -81,6 +82,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
+    depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
+
     trainCameras = scene.getTrainCameras().copy()
     testCameras = scene.getTestCameras().copy()
     allCameras = trainCameras + testCameras
@@ -120,6 +123,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gs_w = render_pkg["gs_w"]
         rendered_mask: torch.Tensor = render_pkg["mask"]
         rendered_depth: torch.Tensor = render_pkg["depth"]
+        rendered_invdepth: torch.Tensor = render_pkg["invdepth"]
         rendered_middepth: torch.Tensor = render_pkg["middepth"]
         rendered_normal: torch.Tensor = render_pkg["normal"]
         depth_distortion: torch.Tensor = render_pkg["depth_distortion"]
@@ -159,7 +163,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # # 保存图片
         # image.save('output_image_pil.png')
         if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
-            deploss = l1_loss(gt_maskeddepth, depth*depth_mask) * 0.1
+            deploss = l1_loss(gt_maskeddepth, rendered_invdepth*depth_mask) * depth_l1_weight(iteration)
         else:
             deploss = torch.tensor([0],dtype=torch.float32,device="cuda")
 
@@ -237,11 +241,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_end.record()
         is_save_images = True
         if is_save_images and (iteration % opt.densification_interval == 0):
-            log_depth = depth.expand(3, depth.shape[1], depth.shape[2])
+            log_depth = rendered_invdepth.expand(3, rendered_invdepth.shape[1], rendered_invdepth.shape[2])
             if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
+                gt_maskeddepth = gt_maskeddepth.expand(3, gt_maskeddepth.shape[1], gt_maskeddepth.shape[2])
                 row0 = torch.cat([gt_image, image, gt_maskeddepth, log_depth], dim=2)       
             else:
-                row0 = torch.cat([gt_image, image, viewpoint_cam.original_depth, log_depth], dim=2)       
+                original_depth = viewpoint_cam.original_depth.expand(3, viewpoint_cam.original_depth.shape[1], viewpoint_cam.original_depth.shape[2])
+
+                row0 = torch.cat([gt_image, image, original_depth, log_depth], dim=2)       
             image_to_show = torch.clamp(row0, 0, 1)
             
             os.makedirs(f"{dataset.model_path}/log_images", exist_ok = True)

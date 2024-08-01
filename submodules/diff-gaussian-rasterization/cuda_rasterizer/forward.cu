@@ -631,6 +631,7 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	float* __restrict__ out_depth,
+	float* __restrict__ out_invdepth,
 	float* __restrict__ out_middepth,
 	float* __restrict__ out_normal,
 	float* __restrict__ out_distortion,
@@ -683,6 +684,7 @@ renderCUDA(
 	float depth_distortion = 0;
 	float dist1 = 0;
 	float dist2 = 0;
+	float expected_invdepth = 0.0f;
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -755,6 +757,9 @@ renderCUDA(
 				Normal[2] += collected_normals[j].z * aT;
 			}
 
+			if(out_invdepth)
+			expected_invdepth += (1 / depth) * alpha * T;
+
 			if (T > 0.5){
 				mD = depth;
 				max_contributor = contributor;
@@ -798,6 +803,8 @@ renderCUDA(
 		out_distortion[pix_id] = depth_distortion;
 		out_wd[pix_id] = dist1;
 		// out_wd2[pix_id] = dist2; // Opacity is detached from depth distortion loss. So this variable is useless
+		if (out_invdepth)
+		out_invdepth[pix_id] = expected_invdepth;// 1. / (expected_depth + T * 1e3);
 	}
 }
 
@@ -818,6 +825,7 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color,
 	float* out_depth,
+	float* out_invdepth,
 	float* out_middepth,
 	float* out_normal,
 	float* out_distortion,
@@ -842,6 +850,7 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		out_depth,
+		out_invdepth,
 		out_middepth,
 		out_normal,
 		out_distortion,

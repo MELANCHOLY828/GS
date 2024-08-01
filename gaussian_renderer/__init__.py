@@ -47,7 +47,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
-        debug=pipe.debug
+        debug=pipe.debug, 
+        do_invdepth=True,
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -95,7 +96,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     #     cov3D_precomp = cov3D_precomp
     # )
     gs_w = None
-    rendered_image, radii, rendered_depth, rendered_middepth, rendered_alpha, rendered_normal, depth_distortion, gs_w = rasterizer(
+    rendered_image, radii, rendered_depth, rendered_invdepth, rendered_middepth, rendered_alpha, rendered_normal, depth_distortion, gs_w = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
@@ -117,6 +118,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     return {"render": rendered_image,
             "mask": rendered_alpha,
             "depth": rendered_depth,
+            "invdepth": rendered_invdepth,
             "middepth": rendered_middepth,
             "viewspace_points": means2D,
             "visibility_filter" : radii > 0,

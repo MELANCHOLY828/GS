@@ -269,6 +269,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const bool prefiltered,
 	float* out_color,
 	float* out_depth,
+	float* out_invdepth,
 	float* out_middepth,
 	float* out_alpha,
 	float* out_normal,
@@ -396,6 +397,7 @@ int CudaRasterizer::Rasterizer::forward(
 		background,
 		out_color,
 		out_depth,
+		out_invdepth,
 		out_middepth,
 		out_normal,
 		out_distortion,
@@ -431,6 +433,7 @@ void CudaRasterizer::Rasterizer::backward(
 	char* img_buffer,
 	const float* dL_dpix,
 	const float* dL_dpix_depth,
+	const float* dL_dpix_invdepth,
 	const float* dL_dpix_middepth,
 	const float* dL_dalphas,
 	const float* dL_dpixel_normals,
@@ -441,6 +444,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dcolor,
 	float* dL_ddepth,
 	float* dL_ddepth_plane,
+	// float* dL_dinvdepth,
 	float* dL_dnormals,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
@@ -489,6 +493,7 @@ void CudaRasterizer::Rasterizer::backward(
 		imgState.n_contrib,
 		dL_dpix,
 		dL_dpix_depth,
+		dL_dpix_invdepth,
 		dL_dpix_middepth,
 		dL_dalphas,
 		dL_dpixel_normals,
@@ -500,6 +505,7 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dcolor,
 		dL_ddepth,
 		(float2*)dL_ddepth_plane,
+		// dL_dinvdepth,
 		(float3*)dL_dnormals), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance

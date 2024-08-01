@@ -39,6 +39,7 @@ namespace BACKWARD
 		const uint32_t* n_contrib,
 		const float* dL_dpixels,
 		const float* dL_dpixel_depths,
+		const float* dL_dpixel_invdepths,
 		const float* dL_dpixel_middepths,
 		const float* dL_dalphas,
 		const float* dL_dpixel_normals,
@@ -51,6 +52,7 @@ namespace BACKWARD
 		float* dL_dcolors,
 		float* dL_ddepths,
 		float2* dL_ddepths_plane,
+		// float* dL_dinvdepths,
 		float3* dL_dnormals);
 
 	void preprocess(

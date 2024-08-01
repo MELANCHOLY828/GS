@@ -68,6 +68,7 @@ namespace FORWARD
 		const float* bg_color,
 		float* out_color,
 		float* out_depth,
+		float* out_invdepth,
 		float* out_middepth,
 		float* out_normal,
 		float* out_distortion,
