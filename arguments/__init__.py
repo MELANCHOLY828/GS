@@ -102,7 +102,7 @@ class OptimizationParams(ParamGroup):
         self.clone_threshold = 0.0002
         self.split_threshold = 0.0002
         self.random_background = False
-        self.regularization_from_iter = 15_0000
+        self.regularization_from_iter = 15_0000   #depth distortion iter
         self.lambda_distortion = 100
         self.lambda_depth_normal = 0.05
         self.densify_grad_threshold = 0.0002
@@ -114,14 +114,14 @@ class OptimizationParams(ParamGroup):
         self.use_reduce = True
         self.opacity_reduce_interval = 500  # remove floater
         self.depth_threshold = 0.37
-        self.sky = False
-        self.use_depth = True
-        self.lambda_rank = 1e-5
-        self.scale_loss = True
-        self.use_depth_iter = 0
-        self.mask_depth = False
-        self.depth_l1_weight_init = 1.0
-        self.depth_l1_weight_final = 0.01
+        self.sky = False                   #use mask(sam)
+        self.use_depth = False
+        self.lambda_rank = 1e-5            #weight(erank)
+        self.scale_loss = True              # use erank
+        self.use_depth_iter = 0          #inverse depth iter
+        self.mask_depth = False          #use mask(about depth)
+        self.depth_l1_weight_init = 1.0  #weight (inverse depth)
+        self.depth_l1_weight_final = 0.01   #weight (inverse depth)
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

@@ -33,10 +33,10 @@ jobs = list(zip(scenes, factors, normal_weights))
 
 def train_scene(gpu, scene, factor, weight):
     cmds = [
-            f"CUDA_VISIBLE_DEVICES={gpu} python train.py -s {data_dir}/{scene}/ -m {output_dir}/{scene}_nosky_nodepth  --port 8000 -i images_{factor} --use_prune_weight --eval",
+            f"CUDA_VISIBLE_DEVICES={gpu} python train.py -s {data_dir}/{scene}/ -m {output_dir}/{scene}_nosky_nodepth_dis  --port 8100 -i images_{factor} --use_prune_weight --regularization_from_iter 15000 --eval",
 
-            f"CUDA_VISIBLE_DEVICES={gpu} python render.py -s {data_dir}/{scene}/ -m {output_dir}/{scene}_nosky_nodepth  --skip_train -i images_{factor}",
-            f"CUDA_VISIBLE_DEVICES={gpu} python metrics.py -m {output_dir}/{scene}_nosky_nodepth ",
+            f"CUDA_VISIBLE_DEVICES={gpu} python render.py -s {data_dir}/{scene}/ -m {output_dir}/{scene}_nosky_nodepth_dis --skip_train  -i images_{factor}",
+            f"CUDA_VISIBLE_DEVICES={gpu} python metrics.py -m {output_dir}/{scene}_nosky_nodepth_dis",
             # f"OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES={gpu} python extract_mesh_tsdf.py -s data/MipNeRF360/{scene} -m {tune_output_dir}/{scene} --eval -i images_{factor} --iteration {iteration} --voxel_size 0.004 --sdf_trunc 0.04",
 
         ]
@@ -61,7 +61,7 @@ def dispatch_jobs(jobs, executor):
         # Get the list of available GPUs, not including those that are reserved.
         all_available_gpus = set(range(torch.cuda.device_count()))
         available_gpus = list(all_available_gpus - reserved_gpus - excluded_gpus)
-        available_gpus = [2]
+        available_gpus = [1]
         # Launch new jobs on available GPUs
         while available_gpus and jobs:
             gpu = available_gpus.pop(0)
