@@ -184,6 +184,7 @@ def readColmapSceneInfo(path, images, masks, depths, eval, llffhold=8):
     else :
         mask_dir = None
     if depths != "":
+        
         depth_dir = os.path.join(path, depths)
         try:
             with open(depth_params_file, "r") as f:
@@ -204,6 +205,8 @@ def readColmapSceneInfo(path, images, masks, depths, eval, llffhold=8):
             sys.exit(1)
     else:
         depth_dir = None
+    # import pdb
+    # pdb.set_trace() 
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), mask_folder=mask_dir, depth_folder=depth_dir, depths_params=depths_params)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
@@ -213,7 +216,8 @@ def readColmapSceneInfo(path, images, masks, depths, eval, llffhold=8):
     else:
         train_cam_infos = cam_infos
         test_cam_infos = []
-
+    import pdb
+    pdb.set_trace() 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "sparse/0/points3D.ply")

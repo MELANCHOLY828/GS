@@ -50,7 +50,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     # if cam_info.depth:
     #     resized_depth = PILtoTorch(cam_info.depth, resolution)
     #     depth = resized_depth
-    if cam_info.depth_path != "":
+    if cam_info.depth_path != None:
         try:
             depthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / float(2**16)
         except FileNotFoundError:

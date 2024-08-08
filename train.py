@@ -246,9 +246,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gt_maskeddepth = gt_maskeddepth.expand(3, gt_maskeddepth.shape[1], gt_maskeddepth.shape[2])
                 row0 = torch.cat([gt_image, image, gt_maskeddepth, log_depth], dim=2)       
             else:
-                original_depth = viewpoint_cam.original_depth.expand(3, viewpoint_cam.original_depth.shape[1], viewpoint_cam.original_depth.shape[2])
+                # original_depth = viewpoint_cam.original_depth.expand(3, viewpoint_cam.original_depth.shape[1], viewpoint_cam.original_depth.shape[2])
 
-                row0 = torch.cat([gt_image, image, original_depth, log_depth], dim=2)       
+                row0 = torch.cat([gt_image, image], dim=2)       
             image_to_show = torch.clamp(row0, 0, 1)
             
             os.makedirs(f"{dataset.model_path}/log_images", exist_ok = True)
