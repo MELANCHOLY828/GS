@@ -251,7 +251,7 @@ int CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> geometryBuffer,
 	std::function<char* (size_t)> binningBuffer,
 	std::function<char* (size_t)> imageBuffer,
-	const int P, int D, int M,
+	const int P, int D, int* Ds, int M,
 	const float* background,
 	const int width, int height,
 	const float* means3D,
@@ -268,6 +268,8 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	int* out_touched_pixels,
+	float* out_transmittance,
 	float* out_depth,
 	float* out_invdepth,
 	float* out_middepth,
@@ -276,6 +278,7 @@ int CudaRasterizer::Rasterizer::forward(
 	float* out_distortion,
 	float* gs_w,
 	int* radii,
+	const bool calculate_mean_transmittance,
 	bool debug)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
@@ -305,7 +308,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 	CHECK_CUDA(FORWARD::preprocess(
-		P, D, M,
+		P, D, Ds, M,
 		means3D,
 		(glm::vec3*)scales,
 		scale_modifier,
@@ -396,6 +399,8 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.n_contrib,
 		background,
 		out_color,
+		out_touched_pixels,
+		out_transmittance,
 		out_depth,
 		out_invdepth,
 		out_middepth,
@@ -403,7 +408,8 @@ int CudaRasterizer::Rasterizer::forward(
 		out_distortion,
 		imgState.wd,
 		imgState.wd2,
-		gs_w
+		gs_w,
+		calculate_mean_transmittance
 		), debug);
 
 	return num_rendered;
@@ -412,7 +418,7 @@ int CudaRasterizer::Rasterizer::forward(
 // Produce necessary gradients for optimization, corresponding
 // to forward render pass
 void CudaRasterizer::Rasterizer::backward(
-	const int P, int D, int M, int R,
+	const int P, int D, int* Ds, int M, int R,
 	const float* background,
 	const int width, int height,
 	const float* means3D,
@@ -512,7 +518,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
-	CHECK_CUDA(BACKWARD::preprocess(P, D, M,
+	CHECK_CUDA(BACKWARD::preprocess(P, D, Ds, M,
 		(float3*)means3D,
 		radii,
 		shs,

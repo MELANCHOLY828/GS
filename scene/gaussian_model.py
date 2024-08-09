@@ -19,8 +19,29 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH, SH2RGB
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+from diff_gaussian_rasterization._C import calculate_colours_variance, kmeans_cuda
 from simple_knn._C import distCUDA2
+from collections import OrderedDict
 
+def pcast_i16_to_f32(tensor):
+    return tensor.view(dtype=torch.float16).float()
+class Codebook():
+    def __init__(self, ids, centers):
+        self.ids = ids
+        self.centers = centers
+    
+    def evaluate(self):
+        return self.centers[self.ids.flatten().long()]
+def generate_codebook(values, inverse_activation_fn=lambda x: x, num_clusters=256, tol=0.0001):
+    shape = values.shape
+    values = values.flatten().view(-1, 1)
+    centers = values[torch.randint(values.shape[0], (num_clusters, 1), device="cuda").squeeze()].view(-1,1)
+
+    ids, centers = kmeans_cuda(values, centers.squeeze(), tol, 500)
+    ids = ids.byte().squeeze().view(shape)
+    centers = centers.view(-1,1)
+
+    return Codebook(ids.cuda(), inverse_activation_fn(centers.cuda()))
 class GaussianModel:
 
     def setup_functions(self):
@@ -185,12 +206,17 @@ class GaussianModel:
                 param_group['lr'] = lr
                 return lr
 
-    def construct_list_of_attributes(self):   #不一样
-        l = ['x', 'y', 'z', 'red', 'green', 'blue']
+    def construct_list_of_attributes(self, rest_coeffs = None):   #不一样
+        if rest_coeffs == None:
+            l = ['x', 'y', 'z', 'red', 'green', 'blue']
+        else:
+            l = ['x', 'y', 'z']
         # All channels except the 3 DC
         for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
             l.append('f_dc_{}'.format(i))
-        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
+        if rest_coeffs is None:
+            rest_coeffs = self._features_rest.shape[1]*self._features_rest.shape[2]
+        for i in range(rest_coeffs):
             l.append('f_rest_{}'.format(i))
         l.append('opacity')
         for i in range(self._scaling.shape[1]):
@@ -198,7 +224,42 @@ class GaussianModel:
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
         return l
+    
+    # def construct_list_of_attributes(self, rest_coeffs = 45):   #不一样
+    #     l = ['x', 'y', 'z', 'red', 'green', 'blue']
+    #     # All channels except the 3 DC
+    #     for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
+    #         l.append('f_dc_{}'.format(i))
+    #     for i in range(rest_coeffs):
+    #         l.append('f_rest_{}'.format(i))
+    #     l.append('opacity')
+    #     for i in range(self._scaling.shape[1]):
+    #         l.append('scale_{}'.format(i))
+    #     for i in range(self._rotation.shape[1]):
+    #         l.append('rot_{}'.format(i))
+    #     return l
+    def produce_clusters(self, num_clusters=256, store_dict_path=None):
+        max_coeffs_num = (self.max_sh_degree + 1)**2 - 1
+        codebook_dict = OrderedDict({})
 
+        codebook_dict["features_dc"] = generate_codebook(self._features_dc.detach()[:, 0],
+                                                         num_clusters=num_clusters, tol=0.001)
+        for sh_degree in range(max_coeffs_num):
+                codebook_dict[f"features_rest_{sh_degree}"] = generate_codebook(
+                    self._features_rest.detach()[:, sh_degree], num_clusters=num_clusters)
+
+        codebook_dict["opacity"] = generate_codebook(self.get_opacity.detach(),
+                                                     self.inverse_opacity_activation, num_clusters=num_clusters)
+        codebook_dict["scaling"] = generate_codebook(self.get_scaling.detach(),
+                                                     self.scaling_inverse_activation, num_clusters=num_clusters)
+        codebook_dict["rotation_re"] = generate_codebook(self.get_rotation.detach()[:, 0:1],
+                                                         num_clusters=num_clusters)
+        codebook_dict["rotation_im"] = generate_codebook(self.get_rotation.detach()[:, 1:],
+                                                         num_clusters=num_clusters)
+        if store_dict_path is not None:
+            torch.save(codebook_dict, os.path.join(store_dict_path, 'codebook.pt'))
+        
+        self._codebook_dict = codebook_dict
     def save_ply(self, path):
         mkdir_p(os.path.dirname(path))
         xyz = self._xyz.detach().cpu().numpy()
@@ -214,6 +275,81 @@ class GaussianModel:
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
+
+    def save_ply_reduce(self, path, quantised=False, half_float=False, variable_sh_bands=False):
+        self.variable_sh_bands = variable_sh_bands
+        float_type = 'int16' if half_float else 'f4'
+        attribute_type = 'u1' if quantised else float_type
+        max_sh_coeffs = (self.max_sh_degree + 1) ** 2 - 1
+        mkdir_p(os.path.dirname(path))
+        elements_list = []
+
+        if quantised:
+            # Read codebook dict to extract ids and centers
+            if self._codebook_dict is None:
+                print("Clustering codebook missing. Returning without saving")
+                return
+
+            opacity = self._codebook_dict["opacity"].ids
+            scaling = self._codebook_dict["scaling"].ids
+            rot = torch.cat((self._codebook_dict["rotation_re"].ids,
+                            self._codebook_dict["rotation_im"].ids),
+                            dim=1)
+            features_dc = self._codebook_dict["features_dc"].ids
+            features_rest = torch.stack([self._codebook_dict[f"features_rest_{i}"].ids
+                                        for i in range(max_sh_coeffs)
+                                        ], dim=1).squeeze()
+
+            dtype_full = [(k, float_type) for k in self._codebook_dict.keys()]
+            codebooks = np.empty(256, dtype=dtype_full)
+
+            centers_numpy_list = [v.centers.detach().cpu().numpy() for v in self._codebook_dict.values()]
+
+            if half_float:
+                # No float 16 for plydata, so we just pointer cast everything to int16
+                for i in range(len(centers_numpy_list)):
+                    centers_numpy_list[i] = np.cast[np.float16](centers_numpy_list[i]).view(dtype=np.int16)
+                
+            codebooks[:] = list(map(tuple, np.concatenate([ar for ar in centers_numpy_list], axis=1)))
+                
+        else:
+            opacity = self._opacity
+            scaling = self._scaling
+            rot = self._rotation
+            features_dc = self._features_dc
+            features_rest = self._features_rest
+
+        for sh_degree in range(self.max_sh_degree + 1):
+            coeffs_num = (sh_degree+1)**2 - 1
+            degrees_mask = (self._degrees == sh_degree).squeeze()
+
+            #  Position is not quantised
+            if half_float:
+                xyz = self._xyz[degrees_mask].detach().cpu().half().view(dtype=torch.int16).numpy()
+            else:
+                xyz = self._xyz[degrees_mask].detach().cpu().numpy()
+
+            f_dc = features_dc[degrees_mask].detach().contiguous().cpu().view(-1,3).numpy()
+            # Transpose so that to save rest featrues as rrr ggg bbb instead of rgb rgb rgb
+            if self.variable_sh_bands:
+                f_rest = features_rest[sh_degree][:, :coeffs_num].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+            else:
+                f_rest = features_rest[degrees_mask][:, :coeffs_num].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+            opacities = opacity[degrees_mask].detach().cpu().numpy()
+            scale = scaling[degrees_mask].detach().cpu().numpy()
+            rotation = rot[degrees_mask].detach().cpu().numpy()
+
+            dtype_full = [(attribute, float_type) 
+                          if attribute in ['x', 'y', 'z'] else (attribute, attribute_type) 
+                          for attribute in self.construct_list_of_attributes(coeffs_num * 3)]
+            elements = np.empty(degrees_mask.sum(), dtype=dtype_full)
+
+            attributes = np.concatenate((xyz, f_dc, f_rest, opacities, scale, rotation), axis=1)
+            elements[:] = list(map(tuple, attributes))
+            elements_list.append(PlyElement.describe(elements, f'vertex_{sh_degree}'))
+        if quantised:
+            elements_list.append(PlyElement.describe(codebooks, f'codebook_centers'))
+        PlyData(elements_list).write(path)
 
     def reset_opacity(self):
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
@@ -236,7 +372,85 @@ class GaussianModel:
         # geometric progression ensures the atom scale will be optimized into 1/2 at 7k iteration
         self.atom_scale*=0.99
         dist[atom_mask]*=0.99
+    def _parse_vertex_group(self,
+                            vertex_group,
+                            sh_degree,
+                            float_type,
+                            attribute_type,
+                            max_coeffs_num,
+                            quantised,
+                            half_precision,                            
+                            codebook_centers_torch=None):
+        coeffs_num = (sh_degree+1)**2 - 1
+        num_primitives = vertex_group.count
 
+        xyz = np.stack((np.asarray(vertex_group["x"], dtype=float_type),
+                        np.asarray(vertex_group["y"], dtype=float_type),
+                        np.asarray(vertex_group["z"], dtype=float_type)), axis=1)
+
+        opacity = np.asarray(vertex_group["opacity"], dtype=attribute_type)[..., np.newaxis]
+    
+        # Stacks the separate components of a vector attribute into a joint numpy array
+        # Defined just to avoid visual clutter
+        def stack_vector_attribute(name, count):
+            return np.stack([np.asarray(vertex_group[f"{name}_{i}"], dtype=attribute_type)
+                            for i in range(count)], axis=1)
+
+        features_dc = stack_vector_attribute("f_dc", 3).reshape(-1, 1, 3)
+        scaling = stack_vector_attribute("scale", 3)
+        rotation = stack_vector_attribute("rot", 4)
+        
+        # Take care of error when trying to stack 0 arrays
+        if sh_degree > 0:
+            features_rest = stack_vector_attribute("f_rest", coeffs_num*3).reshape((num_primitives, 3, coeffs_num))
+        else:
+            features_rest = np.empty((num_primitives, 3, 0), dtype=attribute_type)
+
+        if not self.variable_sh_bands:
+            # Using full tensors (P x 15) even for points that don't require it
+            features_rest = np.concatenate(
+                (features_rest,
+                    np.zeros((num_primitives, 3, max_coeffs_num - coeffs_num), dtype=attribute_type)), axis=2)
+
+        degrees = np.ones(num_primitives, dtype=np.int32)[..., np.newaxis] * sh_degree
+
+        xyz = torch.from_numpy(xyz).cuda()
+        if half_precision:
+            xyz = pcast_i16_to_f32(xyz)
+        features_dc = torch.from_numpy(features_dc).contiguous().cuda()
+        features_rest = torch.from_numpy(features_rest).contiguous().cuda()
+        opacity = torch.from_numpy(opacity).cuda()
+        scaling = torch.from_numpy(scaling).cuda()
+        rotation = torch.from_numpy(rotation).cuda()
+        degrees = torch.from_numpy(degrees).cuda()
+
+        # If quantisation has been used, it is needed to index the centers
+        if quantised:
+            features_dc = codebook_centers_torch['features_dc'][features_dc.view(-1).long()].view(-1, 1, 3)
+
+            # This is needed as we might have padded the features_rest tensor with zeros before
+            reshape_channels = coeffs_num if self.variable_sh_bands else max_coeffs_num            
+            # The gather operation indexes a 256x15 tensor with a (P*3)features_rest index tensor,
+            # in a column-wise fashion
+            # Basically this is equivalent to indexing a single codebook with a P*3 index
+            # features_rest times inside a loop
+            features_rest = codebook_centers_torch['features_rest'].gather(0, features_rest.view(num_primitives*3, reshape_channels).long()).view(num_primitives, 3, reshape_channels)
+            opacity = codebook_centers_torch['opacity'][opacity.long()]
+            scaling = codebook_centers_torch['scaling'][scaling.view(num_primitives*3).long()].view(num_primitives, 3)
+            # Index the real and imaginary part separately
+            rotation = torch.cat((
+                codebook_centers_torch['rotation_re'][rotation[:, 0:1].long()],
+                codebook_centers_torch['rotation_im'][rotation[:, 1:].reshape(num_primitives*3).long()].view(num_primitives,3)
+                ), dim=1)
+
+        return {'xyz': xyz,
+                'opacity': opacity,
+                'features_dc': features_dc,
+                'features_rest': features_rest,
+                'scaling': scaling,
+                'rotation': rotation,
+                'degrees': degrees
+        }
     def load_ply(self, path):
         plydata = PlyData.read(path)
 
@@ -280,6 +494,93 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
+    def load_ply_reduce(self, path, half_float=False, quantised=False, variable_sh_bands = False):
+        self.variable_sh_bands = variable_sh_bands
+        plydata = PlyData.read(path)
+
+        xyz_list = []
+        features_dc_list = []
+        features_rest_list = []
+        opacity_list = []
+        scaling_list = []
+        rotation_list = []
+        degrees_list = []
+
+        float_type = 'int16' if half_float else 'f4'
+        attribute_type = 'u1' if quantised else float_type
+        max_coeffs_num = (self.max_sh_degree+1)**2 - 1
+
+        codebook_centers_torch = None
+        if quantised:
+            # Parse the codebooks.
+            # The layout is 256 x 20, where 256 is the number of centers and 20 number of codebooks
+            # In the future we could have different number of centers
+            codebook_centers = plydata.elements[-1]
+
+            codebook_centers_torch = OrderedDict()
+            codebook_centers_torch['features_dc'] = torch.from_numpy(np.asarray(codebook_centers['features_dc'], dtype=float_type)).cuda()
+            codebook_centers_torch['features_rest'] = torch.from_numpy(np.concatenate(
+                [
+                    np.asarray(codebook_centers[f'features_rest_{i}'], dtype=float_type)[..., np.newaxis]
+                    for i in range(max_coeffs_num)
+                ], axis=1)).cuda()
+            codebook_centers_torch['opacity'] = torch.from_numpy(np.asarray(codebook_centers['opacity'], dtype=float_type)).cuda()
+            codebook_centers_torch['scaling'] = torch.from_numpy(np.asarray(codebook_centers['scaling'], dtype=float_type)).cuda()
+            codebook_centers_torch['rotation_re'] = torch.from_numpy(np.asarray(codebook_centers['rotation_re'], dtype=float_type)).cuda()
+            codebook_centers_torch['rotation_im'] = torch.from_numpy(np.asarray(codebook_centers['rotation_im'], dtype=float_type)).cuda()
+
+            # If use half precision then we have to pointer cast the int16 to float16
+            # and then cast them to floats, as that's the format that our renderer accepts
+            if half_float:
+                for k, v in codebook_centers_torch.items():
+                    codebook_centers_torch[k] = pcast_i16_to_f32(v)
+
+        # Iterate over the point clouds that are stored on top level of plyfile
+        # to get the various fields values 
+        for sh_degree in range(0, self.max_sh_degree+1):
+            attribues_dict = self._parse_vertex_group(plydata.elements[sh_degree],
+                                                      sh_degree,
+                                                      float_type,
+                                                      attribute_type,
+                                                      max_coeffs_num,
+                                                      quantised,
+                                                      half_float,
+                                                      codebook_centers_torch)
+
+            xyz_list.append(attribues_dict['xyz'])
+            features_dc_list.append(attribues_dict['features_dc'])
+            features_rest_list.append(attribues_dict['features_rest'].transpose(1,2))
+            opacity_list.append(attribues_dict['opacity'])
+            scaling_list.append(attribues_dict['scaling'])
+            rotation_list.append(attribues_dict['rotation'])
+            degrees_list.append(attribues_dict['degrees'])
+
+        # Concatenate the tensors into one, to be used in our program
+        # TODO: allow multiple PCDs to be rendered/optimise and skip this step
+        xyz = torch.cat((xyz_list), dim=0)
+        features_dc = torch.cat((features_dc_list), dim=0)
+        if not self.variable_sh_bands:
+            features_rest = torch.cat((features_rest_list), dim=0)
+        else:
+            features_rest = features_rest_list
+        opacity = torch.cat((opacity_list), dim=0)
+        scaling = torch.cat((scaling_list), dim=0)
+        rotation = torch.cat((rotation_list), dim=0)
+        
+        self._xyz = nn.Parameter(xyz.requires_grad_(True))
+        self._features_dc = nn.Parameter(features_dc.requires_grad_(True))
+        if not self.variable_sh_bands:
+            self._features_rest = nn.Parameter(features_rest.requires_grad_(True))
+        else:
+            for tensor in features_rest_list:
+                tensor.requires_grad_(True)
+            self._features_rest = features_rest_list
+        self._opacity = nn.Parameter(opacity.requires_grad_(True))
+        self._scaling = nn.Parameter(scaling.requires_grad_(True))
+        self._rotation = nn.Parameter(rotation.requires_grad_(True))
+        self._degrees = torch.cat((degrees_list), dim=0)
+
+        self.active_sh_degree = self.max_sh_degree
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -494,3 +795,70 @@ class GaussianModel:
         self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,2:], dim=-1, keepdim=True)
         self.xyz_gradient_accum_abs_max[update_filter] = torch.max(self.xyz_gradient_accum_abs_max[update_filter], torch.norm(viewspace_point_tensor.grad[update_filter,2:], dim=-1, keepdim=True))
         self.denom[update_filter] += 1
+
+#add fun about reduce
+    def _low_variance_colour_culling(self, threshold, weighted_variance, weighted_mean):
+        original_degrees = torch.zeros_like(self._degrees)
+        original_degrees.copy_(self._degrees)
+
+        # Uniform colour culling
+        weighted_colour_std = weighted_variance.sqrt()
+        weighted_colour_std[weighted_colour_std.isnan()] = 0
+        weighted_colour_std = weighted_colour_std.mean(dim=2).squeeze()
+
+        std_mask = weighted_colour_std < threshold
+        self._features_dc[std_mask] = (weighted_mean[std_mask] - 0.5) / 0.28209479177387814
+        self._degrees[std_mask] = 0
+        self._features_rest[std_mask] = 0
+
+    def _low_distance_colour_culling(self, threshold, colour_distances):
+        colour_distances[colour_distances.isnan()] = 0
+
+        # Loop from active_sh_degree - 1 to 0, since the comparisons
+        # are always done based on the max band that corresponds to active_sh_degree
+        for sh_degree in range(self.active_sh_degree - 1, 0, -1):
+            coeffs_num = (sh_degree+1)**2 - 1
+            mask = colour_distances[:, sh_degree] < threshold
+            self._degrees[mask] = torch.min(
+                    torch.tensor([sh_degree], device="cuda", dtype=int),
+                    self._degrees[mask]
+                ).int()
+            
+            # Zero-out the associated SH coefficients for clarity,
+            # as they won't be used in rasterisation due to the degrees field
+            self._features_rest[mask, coeffs_num:] = 0
+
+    def cull_sh_bands(self, cameras, threshold=0*np.sqrt(3)/255, std_threshold=0.):
+        camera_positions = torch.stack([cam.camera_center for cam in cameras], dim=0)
+        camera_viewmatrices = torch.stack([cam.world_view_transform for cam in cameras], dim=0)
+        camera_projmatrices = torch.stack([cam.full_proj_transform for cam in cameras], dim=0)
+        camera_fovx = torch.tensor([camera.FoVx for camera in cameras], device="cuda", dtype=torch.float32)
+        camera_fovy = torch.tensor([camera.FoVy for camera in cameras], device="cuda", dtype=torch.float32)
+        image_height = torch.tensor([camera.image_height for camera in cameras], device="cuda", dtype=torch.int32)
+        image_width = torch.tensor([camera.image_width for camera in cameras], device="cuda", dtype=torch.int32)
+        self._degrees = self.active_sh_degree * torch.ones((self._xyz.shape[0], 1), device="cuda", dtype=torch.int32)
+        # Wrapping in a function since it's called with the same parameters twice
+        def run_calculate_colours_variance():
+            return calculate_colours_variance(
+                camera_positions,
+                self.get_xyz,
+                self._opacity,
+                self.get_scaling,
+                self.get_rotation,
+                camera_viewmatrices,
+                camera_projmatrices,
+                torch.tan(camera_fovx*0.5),
+                torch.tan(camera_fovy*0.5),
+                image_height,
+                image_width,
+                self.get_features,
+                self._degrees,
+                self.active_sh_degree,
+                False)
+        
+        _, weighted_variance, weighted_mean = run_calculate_colours_variance()
+        self._low_variance_colour_culling(std_threshold, weighted_variance, weighted_mean)
+
+        # Recalculate to account for the changed values
+        colour_distances, _, _ = run_calculate_colours_variance()
+        self._low_distance_colour_culling(threshold, colour_distances)

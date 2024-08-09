@@ -122,6 +122,9 @@ class OptimizationParams(ParamGroup):
         self.mask_depth = False          #use mask(about depth)
         self.depth_l1_weight_init = 1.0  #weight (inverse depth)
         self.depth_l1_weight_final = 0.01   #weight (inverse depth)
+
+        self.cdist_threshold = 0.      #reduce_sh
+        self.std_threshold = 0.            #reduce_sh
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

@@ -72,7 +72,61 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	clamped[3 * idx + 2] = (result.z < 0);
 	return glm::max(result, 0.0f);
 }
+__device__ glm::vec3 computeColorFromSH_reduce(const int idx, const int* degs, const int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
+{
+	// The implementation is loosely based on code for 
+	// "Differentiable Point-Based Radiance Fields for 
+	// Efficient View Synthesis" by Zhang et al. (2022)
+	glm::vec3 pos = means[idx];
+	glm::vec3 dir = pos - campos;
+	dir = dir / glm::length(dir);
 
+	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	glm::vec3 result = SH_C0 * sh[0];
+	// glm::vec3 result = SH_C0 * glm::vec3(0);
+	// Get current point's enabled bands number
+	int deg = degs[idx];
+
+	if (deg > 0)
+	{
+		float x = dir.x;
+		float y = dir.y;
+		float z = dir.z;
+		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
+
+		if (deg > 1)
+		{
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+			result = result +
+				SH_C2[0] * xy * sh[4] +
+				SH_C2[1] * yz * sh[5] +
+				SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
+				SH_C2[3] * xz * sh[7] +
+				SH_C2[4] * (xx - yy) * sh[8];
+
+			if (deg > 2)
+			{
+				result = result +
+					SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
+					SH_C3[1] * xy * z * sh[10] +
+					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
+					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
+					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
+					SH_C3[5] * z * (xx - yy) * sh[14] +
+					SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+			}
+		}
+	}
+	result += 0.5f;
+
+	// RGB colors are clamped to positive values. If values are
+	// clamped, we need to keep track of this for the backward pass.
+	clamped[3 * idx + 0] = (result.x < 0);
+	clamped[3 * idx + 1] = (result.y < 0);
+	clamped[3 * idx + 2] = (result.z < 0);
+	return glm::max(result, 0.0f);
+}
 // Forward version of 2D covariance matrix computation
 __device__ void computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix, float3* output, float& coef)
 {
@@ -388,7 +442,7 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 
 // Perform initial steps for each Gaussian prior to rasterization.
 template<int C>
-__global__ void preprocessCUDA(int P, int D, int M,
+__global__ void preprocessCUDA(int P, int D, int * Ds, int M,
 	const float* orig_points,
 	const glm::vec3* scales,
 	const float scale_modifier,
@@ -479,7 +533,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		glm::vec3 result;
+		if(Ds == nullptr)
+		result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		else
+		result = computeColorFromSH_reduce(idx, Ds, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
 		rgb[idx * C + 2] = result.z;
@@ -630,6 +688,8 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
+	int* __restrict__ out_touched_pixels,
+	float* __restrict__ out_transmittance,
 	float* __restrict__ out_depth,
 	float* __restrict__ out_invdepth,
 	float* __restrict__ out_middepth,
@@ -637,7 +697,8 @@ renderCUDA(
 	float* __restrict__ out_distortion,
 	float* __restrict__ out_wd,
 	float* __restrict__ out_wd2,
-	float* __restrict__ gs_w)
+	float* __restrict__ gs_w,
+	const bool calculate_mean_transmittance)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -756,7 +817,11 @@ renderCUDA(
 				Normal[1] += collected_normals[j].y * aT;
 				Normal[2] += collected_normals[j].z * aT;
 			}
-
+			if (calculate_mean_transmittance)
+			{
+				atomicAdd(&out_touched_pixels[collected_id[j]], 1);
+				atomicAdd(&out_transmittance[collected_id[j]], T);
+			}
 			if(out_invdepth)
 			expected_invdepth += (1 / depth) * alpha * T;
 
@@ -824,6 +889,8 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
+	int* out_touched_pixels,
+	float* out_transmittance,
 	float* out_depth,
 	float* out_invdepth,
 	float* out_middepth,
@@ -831,7 +898,8 @@ void FORWARD::render(
 	float* out_distortion,
 	float* out_wd,
 	float* out_wd2,
-	float* gs_w)
+	float* gs_w,
+	const bool calculate_mean_transmittance)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -849,6 +917,8 @@ void FORWARD::render(
 		n_contrib,
 		bg_color,
 		out_color,
+		out_touched_pixels,
+		out_transmittance,
 		out_depth,
 		out_invdepth,
 		out_middepth,
@@ -856,10 +926,11 @@ void FORWARD::render(
 		out_distortion,
 		out_wd,
 		out_wd2,
-		gs_w);
+		gs_w,
+		calculate_mean_transmittance);
 }
 
-void FORWARD::preprocess(int P, int D, int M,
+void FORWARD::preprocess(int P, int D, int* Ds, int M,
 	const float* means3D,
 	const glm::vec3* scales,
 	const float scale_modifier,
@@ -888,7 +959,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	bool prefiltered)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
-		P, D, M,
+		P, D, Ds, M,
 		means3D,
 		scales,
 		scale_modifier,

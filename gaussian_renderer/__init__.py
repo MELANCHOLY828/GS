@@ -56,7 +56,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     means3D = pc.get_xyz
     means2D = screenspace_points
     opacity = pc.get_opacity
-
+    degrees = pc._degrees if hasattr(pc, '_degrees') else torch.tensor([]).to(means3D)
+    # degrees = pc._degrees if pc.variable_sh_bands else torch.tensor([]).to(means3D)
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
     scales = None
@@ -100,6 +101,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         means3D = means3D,
         means2D = means2D,
         shs = shs,
+        degrees = degrees,
         colors_precomp = colors_precomp,
         opacities = opacity,
         scales = scales,

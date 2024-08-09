@@ -32,7 +32,7 @@ namespace CudaRasterizer
 			std::function<char* (size_t)> geometryBuffer,
 			std::function<char* (size_t)> binningBuffer,
 			std::function<char* (size_t)> imageBuffer,
-			const int P, int D, int M,
+			const int P, int D, int* Ds, int M,
 			const float* background,
 			const int width, int height,
 			const float* means3D,
@@ -49,6 +49,8 @@ namespace CudaRasterizer
 			const float tan_fovx, float tan_fovy,
 			const bool prefiltered,
 			float* out_color,
+			int* out_touched_pixels,
+			float* out_transmittance,
 			float* out_depth,
 			float* out_invdepth,
 			float* out_middepth,
@@ -57,10 +59,11 @@ namespace CudaRasterizer
 			float* out_distortion,
 			float* gs_w,
 			int* radii = nullptr,
+			const bool calculate_mean_transmittance = false,
 			bool debug = false);
 
 		static void backward(
-			const int P, int D, int M, int R,
+			const int P, int D, int* Ds, int M, int R,
 			const float* background,
 			const int width, int height,
 			const float* means3D,

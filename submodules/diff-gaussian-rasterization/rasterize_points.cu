@@ -50,6 +50,7 @@ RasterizeGaussiansCUDA(
     const int image_width,
 	const torch::Tensor& sh,
 	const int degree,
+	const torch::Tensor &degrees,
 	const torch::Tensor& campos,
 	const bool prefiltered,
 	const bool debug,
@@ -75,6 +76,11 @@ RasterizeGaussiansCUDA(
 	out_invdepth = torch::full({1, H, W}, 0.0, float_opts).contiguous();
 	out_invdepthptr = out_invdepth.data<float>();
   }
+  int * degreesptr = nullptr;
+  if(degrees.size(0) != 0)
+  {
+	degreesptr = degrees.contiguous().data<int>();
+  }
 //   torch::Tensor out_invdepth = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor out_middepth = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor out_alpha = torch::full({1, H, W}, 0.0, float_opts);
@@ -82,6 +88,8 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_distortion = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   torch::Tensor gs_w = torch::full({P}, 0.0, means3D.options());
+  torch::Tensor out_touched_pixels = torch::empty({0}, int_opts);
+  torch::Tensor out_transmittance = torch::empty({0}, float_opts);
 
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
@@ -105,7 +113,7 @@ RasterizeGaussiansCUDA(
 	    geomFunc,
 		binningFunc,
 		imgFunc,
-	    P, degree, M,
+	    P, degree, degreesptr, M,
 		background.contiguous().data<float>(),
 		W, H,
 		means3D.contiguous().data<float>(),
@@ -123,6 +131,8 @@ RasterizeGaussiansCUDA(
 		tan_fovy,
 		prefiltered,
 		out_color.contiguous().data<float>(),
+		out_touched_pixels.contiguous().data<int>(),
+		out_transmittance.contiguous().data<float>(),
 		out_depth.contiguous().data<float>(),
 		out_invdepthptr,
 		out_middepth.contiguous().data<float>(),
@@ -131,6 +141,7 @@ RasterizeGaussiansCUDA(
 		out_distortion.contiguous().data<float>(),
 		gs_w.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
+		false,
 		debug);
   }
   return std::make_tuple(rendered, out_color, out_depth, out_invdepth, out_middepth, out_alpha, out_normal, out_distortion, radii, geomBuffer, binningBuffer, imgBuffer,gs_w);
@@ -159,6 +170,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& dL_dout_distortion,
 	const torch::Tensor& sh,
 	const int degree,
+	const torch::Tensor &degrees,
 	const torch::Tensor& campos,
 	const torch::Tensor& geomBuffer,
 	const int R,
@@ -200,9 +212,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	// dL_dinvdepthsptr = dL_dinvdepths.data<float>();
 	dL_dout_invdepthptr = dL_dout_invdepth.data<float>();
   }
+  int* degreesptr = nullptr;
+  if(degrees.size(0) != 0)
+  {
+	degreesptr = degrees.contiguous().data<int>();
+  }
   if(P != 0)
   {  
-	  CudaRasterizer::Rasterizer::backward(P, degree, M, R,
+	  CudaRasterizer::Rasterizer::backward(P, degree, degreesptr, M, R,
 	  background.contiguous().data<float>(),
 	  W, H, 
 	  means3D.contiguous().data<float>(),

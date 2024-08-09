@@ -25,8 +25,16 @@ setup(
             "cuda_rasterizer/forward.cu",
             "cuda_rasterizer/backward.cu",
             "rasterize_points.cu",
+            "reduced_3dgs/sh_culling.cu",
+            "reduced_3dgs/redundancy_score.cu",
+            "reduced_3dgs/kmeans.cu",
+            "reduced_3dgs.cu",
             "ext.cpp"],
-            extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})
+            extra_compile_args={
+                "cxx": ['-w'],
+                "nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/"),
+                         "--disable-warnings"
+                         ]})
         ],
     cmdclass={
         'build_ext': BuildExtension

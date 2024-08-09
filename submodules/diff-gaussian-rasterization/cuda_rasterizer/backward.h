@@ -56,7 +56,7 @@ namespace BACKWARD
 		float3* dL_dnormals);
 
 	void preprocess(
-		int P, int D, int M,
+		int P, int D, int* Ds, int M,
 		const float3* means,
 		const int* radii,
 		const float* shs,

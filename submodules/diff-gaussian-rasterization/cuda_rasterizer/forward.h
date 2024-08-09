@@ -22,7 +22,7 @@
 namespace FORWARD
 {
 	// Perform initial steps for each Gaussian prior to rasterization.
-	void preprocess(int P, int D, int M,
+	void preprocess(int P, int D, int* Ds, int M,
 		const float* orig_points,
 		const glm::vec3* scales,
 		const float scale_modifier,
@@ -67,6 +67,8 @@ namespace FORWARD
 		uint32_t* n_contrib,
 		const float* bg_color,
 		float* out_color,
+		int* out_touched_pixels,
+		float* out_transmittance,
 		float* out_depth,
 		float* out_invdepth,
 		float* out_middepth,
@@ -74,7 +76,8 @@ namespace FORWARD
 		float* out_distortion,
 		float* out_wd,
 		float* out_wd2,
-		float* gs_w);
+		float* gs_w,
+		const bool calculate_mean_transmittance = false);
 	//follow code is adopted from GOF for marching tetrahedra https://github.com/autonomousvision/gaussian-opacity-fields
 	// Perform initial steps for each Point prior to integration.
 	void preprocess_points(int PN, int D, int M,
