@@ -73,6 +73,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    reduce_flag = False
+    # args.cull_SH = [15000]
+    args.cull_SH = []
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -141,6 +144,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gt_image[:,mask] = 0 
             # image[:,mask] = 0
         if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
+
             depth_mask = (viewpoint_cam.original_depth>0) # render_pkg["acc"][0]
             gt_maskeddepth = (viewpoint_cam.original_depth * depth_mask).cuda()
             if opt.mask_depth:
@@ -245,10 +249,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration >= opt.use_depth_iter and opt.use_depth and viewpoint_cam.original_depth is not None:
                 gt_maskeddepth = gt_maskeddepth.expand(3, gt_maskeddepth.shape[1], gt_maskeddepth.shape[2])
                 row0 = torch.cat([gt_image, image, gt_maskeddepth, log_depth], dim=2)       
-            else:
+            elif viewpoint_cam.original_depth is not None:
                 original_depth = viewpoint_cam.original_depth.expand(3, viewpoint_cam.original_depth.shape[1], viewpoint_cam.original_depth.shape[2])
 
-                row0 = torch.cat([gt_image, image, original_depth, log_depth], dim=2)       
+                row0 = torch.cat([gt_image, image, original_depth, log_depth], dim=2) 
+            else:
+                row0 = torch.cat([gt_image, image], dim=2) 
+
             image_to_show = torch.clamp(row0, 0, 1)
             
             os.makedirs(f"{dataset.model_path}/log_images", exist_ok = True)
@@ -268,7 +275,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             training_report(tb_writer, iteration, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
+                if reduce_flag:
+                    scene.save_reduce(iteration)
+                    scene.gaussians.produce_clusters(store_dict_path=scene.model_path)        
+                    scene.save_reduce(iteration, quantise=True)
+                    scene.save_reduce(iteration, quantise=True, half_float=True)
+                else:
+                    scene.save(iteration)
 
             gaussians.max_weight[visibility_filter] = torch.max(gaussians.max_weight[visibility_filter],
                                                                 gs_w[visibility_filter])
@@ -307,6 +320,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
                 
+            if iteration in args.cull_SH:
+                reduce_flag = True
+                print("\n[ITER {}] Pruning SH Bands".format(iteration))
+                gaussians.cull_sh_bands(scene.getTrainCameras(), threshold=args.cdist_threshold*np.sqrt(3)/255, std_threshold=args.std_threshold)
+
         with torch.no_grad():        
             if network_gui.conn == None:
                 network_gui.try_connect(dataset.render_items)

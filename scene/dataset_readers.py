@@ -118,6 +118,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mask_folder
             # new_name = f'mask_{prefix}.png'
             mask_path = os.path.join(mask_folder, os.path.basename(extr.name))
             mask_name = os.path.basename(image_path).split(".")[0]
+            # import pdb
+            # pdb.set_trace() 
             mask = Image.open(mask_path)
         else:
             mask = None

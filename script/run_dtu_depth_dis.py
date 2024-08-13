@@ -1,3 +1,5 @@
+
+
 # training script for MipNeRF360 dataset
 # adapted from https://github.com/autonomousvision/gaussian-opacity-fields/blob/main/scripts/run_mipnerf360.py
 
@@ -13,30 +15,27 @@ import torch
 
 # normal_weights = [0.1, 0.01, 0.01, 0.1, 0.1, 0.1, 0.1, 0.01, 0.01]
 
-# scenes = ["bicycle", "stump","flowers", "garden",]
 
-# factors = [ 4, 4, 4, 4]
 
-# normal_weights = [0.1, 0.1,0.1, 0.1 ]
-scenes = ["garden",]
-
-factors = [ 4]
-
-normal_weights = [0.1 ]
+normal_weights = [0.1]
 excluded_gpus = set([])
+scenes = [63]
 
+factors = [2] * len(scenes)
 split = "scale"
-data_dir = '/data/liufengyi/data_gs/360_v2'
-output_dir = "/data/liufengyi/res_gs/AtomGS_all_sky"
+
 jobs = list(zip(scenes, factors, normal_weights))
 
 
+excluded_gpus = set([])
+data_dir = "/data/liufengyi/data_gs/dtu"
+output_dir = "/data/liufengyi/res_gs/AtomGS_all_sky"
+
 def train_scene(gpu, scene, factor, weight):
     cmds = [
-            f"CUDA_VISIBLE_DEVICES={gpu} python train.py -s {data_dir}/{scene}/ -m {output_dir}/{scene}_reduce_depth_dis  --port 8200 -i images_{factor} --use_prune_weight --regularization_from_iter 15000 --use_depth -d depth -g outputs/mask",
-
-            # f"CUDA_VISIBLE_DEVICES={gpu} python render.py -s {data_dir}/{scene}/ -m {output_dir}/{scene}_nosky_depth_dis  --skip_train -i images_{factor}",
-            # f"CUDA_VISIBLE_DEVICES={gpu} python metrics.py -m {output_dir}/{scene}_nosky_depth_dis",
+            f"CUDA_VISIBLE_DEVICES={gpu} python train.py -s {data_dir}/scan{scene}/ -m {output_dir}/scan{scene}  --port 8000 --use_decoupled_appearance --lambda_distortion 1000 --regularization_from_iter 15000 --use_depth -d depth -g outputs/mask" ,
+            f"CUDA_VISIBLE_DEVICES={gpu} python render.py -s {data_dir}/scan{scene}/ -m {output_dir}/scan{scene}  --skip_test",
+            f"CUDA_VISIBLE_DEVICES={gpu} python metrics.py -m {output_dir}/scan{scene} ",
             # f"OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES={gpu} python extract_mesh_tsdf.py -s data/MipNeRF360/{scene} -m {tune_output_dir}/{scene} --eval -i images_{factor} --iteration {iteration} --voxel_size 0.004 --sdf_trunc 0.04",
 
         ]
@@ -61,7 +60,8 @@ def dispatch_jobs(jobs, executor):
         # Get the list of available GPUs, not including those that are reserved.
         all_available_gpus = set(range(torch.cuda.device_count()))
         available_gpus = list(all_available_gpus - reserved_gpus - excluded_gpus)
-        available_gpus = [0]
+        # print(available_gpus)
+        available_gpus = [3]
         # Launch new jobs on available GPUs
         while available_gpus and jobs:
             gpu = available_gpus.pop(0)

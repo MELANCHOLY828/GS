@@ -631,7 +631,8 @@ class GaussianModel:
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         self.max_weight = self.max_weight[valid_points_mask]
-
+        if hasattr(self, '_degrees'):
+            self._degrees = self._degrees[valid_points_mask]
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -836,7 +837,7 @@ class GaussianModel:
         camera_fovy = torch.tensor([camera.FoVy for camera in cameras], device="cuda", dtype=torch.float32)
         image_height = torch.tensor([camera.image_height for camera in cameras], device="cuda", dtype=torch.int32)
         image_width = torch.tensor([camera.image_width for camera in cameras], device="cuda", dtype=torch.int32)
-        self._degrees = self.active_sh_degree * torch.ones((self._xyz.shape[0], 1), device="cuda", dtype=torch.int32)
+        self._degrees = self.active_sh_degree * torch.ones((self.get_xyz.shape[0], 1), device="cuda", dtype=torch.int32)
         # Wrapping in a function since it's called with the same parameters twice
         def run_calculate_colours_variance():
             return calculate_colours_variance(

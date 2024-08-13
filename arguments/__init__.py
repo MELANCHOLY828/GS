@@ -51,8 +51,8 @@ class ModelParams(ParamGroup):
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
-        self._depths = "depth"
-        self._getmasks = "outputs/mask"
+        self._depths = ""
+        self._getmasks = ""
         self._resolution = -1
         self._white_background = False
         self.data_device = "cuda"
@@ -117,14 +117,14 @@ class OptimizationParams(ParamGroup):
         self.sky = False                   #use mask(sam)
         self.use_depth = False
         self.lambda_rank = 1e-5            #weight(erank)
-        self.scale_loss = True              # use erank
+        self.scale_loss = False              # use erank
         self.use_depth_iter = 0          #inverse depth iter
         self.mask_depth = False          #use mask(about depth)
         self.depth_l1_weight_init = 1.0  #weight (inverse depth)
         self.depth_l1_weight_final = 0.01   #weight (inverse depth)
 
-        self.cdist_threshold = 0.      #reduce_sh
-        self.std_threshold = 0.            #reduce_sh
+        self.cdist_threshold = 6.      #reduce_sh
+        self.std_threshold = 0.04            #reduce_sh
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

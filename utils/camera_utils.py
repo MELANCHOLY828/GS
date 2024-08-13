@@ -42,6 +42,8 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
+    # import pdb
+    # pdb.set_trace() 
     if cam_info.mask:
         resized_mask_rgb = PILtoTorch(cam_info.mask, resolution)
         mask = resized_mask_rgb
@@ -50,7 +52,8 @@ def loadCam(args, id, cam_info, resolution_scale):
     # if cam_info.depth:
     #     resized_depth = PILtoTorch(cam_info.depth, resolution)
     #     depth = resized_depth
-    if cam_info.depth_path != "":
+    # print(cam_info.depth_path)
+    if cam_info.depth_path != None:
         try:
             depthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / float(2**16)
         except FileNotFoundError:
